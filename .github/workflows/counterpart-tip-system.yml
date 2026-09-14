@@ -12,7 +12,30 @@ jobs:
       - name: Test 1 - current tips contain no tracked secret or state material
         shell: bash
         run: |
-          set -euo pipefail; p="${GITHUB_REPOSITORY_OWNER%-test}"; gh api --paginate "orgs/$p/repos?per_page=100&type=all" --jq '.[]|select(.archived==false)|[.name,.default_branch]|@tsv' >/tmp/repos; test -s /tmp/repos || { echo "No counterpart repos visible; configure TEST_FLEET_GITHUB_TOKEN" >&2; exit 1; }; n=0; while IFS=$'\t' read -r r b; do if [[ "$r" =~ (infra|interfaces|api|server|core) ]]; then n=$((n+1)); s="$(gh api "repos/$p/$r/commits/$b" --jq .sha)"; paths="$(gh api "repos/$p/$r/git/trees/$s?recursive=1" --jq '.tree[].path')"; ! grep -Eq '(^|/)(\.env|id_rsa|id_ed25519|[^/]+\.pem|[^/]+\.key|terraform\.tfstate)$'<<<"$paths"; fi; done </tmp/repos; test "$n" -gt 0
+          set -euo pipefail
+          p="${GITHUB_REPOSITORY_OWNER%-test}"
+          gh api --paginate "orgs/$p/repos?per_page=100&type=all" \
+            --jq '.[]|select(.archived==false)|[.name,.default_branch]|@tsv' >/tmp/repos
+          test -s /tmp/repos || {
+            echo "No counterpart repos visible; configure TEST_FLEET_GITHUB_TOKEN" >&2
+            exit 1
+          }
+          n=0
+          while IFS=$'\t' read -r r b; do
+            if [[ "$r" =~ (infra|interfaces|api|server|core) ]]; then
+              n=$((n+1))
+              s="$(gh api "repos/$p/$r/commits/$b" --jq .sha)"
+              paths="$(gh api "repos/$p/$r/git/trees/$s?recursive=1" --jq '.tree[].path')"
+              bad="$(grep -E '(^|/)(\.env|id_rsa|id_ed25519|[^/]+\.pem|[^/]+\.key|terraform\.tfstate)$' <<<"$paths" || true)"
+              if [[ -n "$bad" ]]; then
+                while IFS= read -r path; do
+                  echo "::error title=tracked secret/state material::$p/$r@$s tracks prohibited path: $path"
+                done <<<"$bad"
+                exit 1
+              fi
+            fi
+          done </tmp/repos
+          test "$n" -gt 0
       - name: Test 2 - modules-first infra preserves sops-age policy when present
         shell: bash
         run: |
